@@ -1,0 +1,10 @@
+{
+  "name": "simplett",
+  "description": "Deploy sto to Heroku.",
+  "keywords": ["Docker"],
+  "env": {
+  },
+  "website": "",
+  "repository": "",
+  "stack": "container"
+ }
