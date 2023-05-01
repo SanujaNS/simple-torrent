@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/boypt/simple-torrent/common"
 	"github.com/spf13/viper"
 	"golang.org/x/time/rate"
 	"gopkg.in/yaml.v2"
@@ -25,6 +26,7 @@ const (
 
 const (
 	defaultTrackerListURL = "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt"
+	defaultConfigFile     = "cloud-torrent"
 )
 
 type Config struct {
@@ -61,10 +63,8 @@ func InitConf(specPath *string) (*Config, error) {
 		// user specific config path
 		viper.SetConfigFile(*specPath)
 	} else {
-		viper.SetConfigName("cloud-torrent")
-		viper.AddConfigPath("/etc/cloud-torrent/")
+		viper.SetConfigName(defaultConfigFile)
 		viper.AddConfigPath("/etc/")
-		viper.AddConfigPath("$HOME/.cloud-torrent")
 		viper.AddConfigPath(".")
 	}
 
@@ -90,7 +90,13 @@ func InitConf(specPath *string) (*Config, error) {
 			// user set a config that is not exists, will write to it later
 			configExists = false
 		} else {
-			return nil, err
+			// write a default config file if not exists and not provided
+			c := &Config{}
+			common.HandleError(viper.Unmarshal(c))
+			cn := defaultConfigFile + ".yaml"
+			common.HandleError(c.WriteYaml(cn))
+			viper.SetConfigFile(cn)
+			log.Println("saved default config", cn)
 		}
 	}
 
@@ -98,7 +104,7 @@ func InitConf(specPath *string) (*Config, error) {
 	log.Println("[config] using config file: ", *specPath)
 
 	c := &Config{}
-	viper.Unmarshal(c)
+	common.HandleError(viper.Unmarshal(c))
 
 	dirChanged, err := c.NormlizeConfigDir()
 	if err != nil {

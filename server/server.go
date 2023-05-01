@@ -8,11 +8,12 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/boypt/simple-torrent/common"
 	"github.com/boypt/simple-torrent/server/httpmiddleware"
 
 	"errors"
@@ -58,9 +59,11 @@ type Server struct {
 	ReqLog         bool   `opts:"help=Enable request logging,env=REQLOG"`
 	Open           bool   `opts:"help=Open now with your default browser"`
 	DisableLogTime bool   `opts:"help=Don't print timestamp in log,env=DISABLELOGTIME"`
+	DisableMmap    bool   `opts:"help=Don't use mmap,env=DISABLEMMAP"`
 	Debug          bool   `opts:"help=Debug app,env=DEBUG"`
 	DebugTorrent   bool   `opts:"help=Debug torrent engine,env=DEBUGTORRENT"`
 	ConvYAML       bool   `opts:"help=Convert old json config to yaml format."`
+	IntevalSec     int    `opts:"help=Inteval seconds to push data to clients (default 3),env=INTEVALSEC"`
 
 	//http handlers
 	scraperh, dlfilesh, statich, verStatich, rssh http.Handler
@@ -71,6 +74,7 @@ type Server struct {
 
 	//sync req
 	syncConnected chan struct{}
+	syncWg        sync.WaitGroup
 	syncSemphor   int32
 
 	state struct {
@@ -78,7 +82,7 @@ type Server struct {
 		UseQueue      bool
 		LatestRSSGuid string
 		Torrents      *map[string]*engine.Torrent
-		Users         map[string]string
+		Users         map[string]struct{}
 		Stats         struct {
 			System   osStats
 			ConnStat torrent.ConnStats
@@ -88,12 +92,18 @@ type Server struct {
 	rssMark         map[string]string
 	rssCache        []*gofeed.Item
 	searchProviders *scraper.Config
-	baseInfo        *BaseInfo
 	engineConfig    *engine.Config
+	tpl             *TPLInfo
 }
 
 // Run the server
-func (s *Server) Run(version string) error {
+func (s *Server) Run(tpl *TPLInfo) error {
+
+	s.tpl = tpl
+
+	if s.IntevalSec <= 0 {
+		s.IntevalSec = 3
+	}
 
 	if s.DisableLogTime {
 		engine.SetLoggerFlag(stdlog.Lmsgprefix)
@@ -113,21 +123,15 @@ func (s *Server) Run(version string) error {
 	if isTLS && (s.CertPath == "" || s.KeyPath == "") {
 		return fmt.Errorf("ERROR: You must provide both key and cert paths")
 	}
-	s.baseInfo = &BaseInfo{
-		Title:   s.Title,
-		Version: version,
-		Runtime: strings.TrimPrefix(runtime.Version(), "go"),
-		Uptime:  time.Now().Unix(),
-	}
 
 	s.syncConnected = make(chan struct{})
 	//init maps
-	s.state.Users = make(map[string]string)
+	s.state.Users = make(map[string]struct{})
 	s.rssMark = make(map[string]string)
 
 	//will use a the local embed/ dir if it exists, otherwise will use the hardcoded embedded binaries
 	s.statich = ctstatic.FileSystemHandler()
-	s.verStatich = http.StripPrefix("/"+version, s.statich)
+	s.verStatich = http.StripPrefix("/"+s.tpl.Version, s.statich)
 	s.dlfilesh = http.StripPrefix("/download/", http.HandlerFunc(s.serveDownloadFiles))
 	s.rssh = http.HandlerFunc(s.serveRSS)
 
@@ -180,7 +184,7 @@ func (s *Server) Run(version string) error {
 	s.state.Stats.System.diskDirPath = c.DownloadDirectory
 	s.state.UseQueue = (c.MaxConcurrentTask > 0)
 	s.engineConfig = c
-	s.baseInfo.AllowRuntimeConfigure = c.AllowRuntimeConfigure
+	s.tpl.AllowRuntimeConfigure = c.AllowRuntimeConfigure
 	if err := s.engine.Configure(c); err != nil {
 		return err
 	}
@@ -203,7 +207,7 @@ func (s *Server) Run(version string) error {
 				proto += "s"
 			}
 			time.Sleep(1 * time.Second)
-			open.Run(fmt.Sprintf("%s://localhost:%d", proto, s.Port))
+			common.FancyHandleError(open.Run(fmt.Sprintf("%s://localhost:%d", proto, s.Port)))
 		}()
 	}
 
@@ -273,7 +277,7 @@ func (s *Server) Run(version string) error {
 		if um, err := strconv.ParseInt(s.UnixPerm, 8, 0); err == nil {
 			uxmod := os.FileMode(um)
 			log.Println("Listening DomainSocket mode change to:", uxmod.String(), s.UnixPerm)
-			os.Chmod(sockPath, uxmod)
+			common.HandleError(os.Chmod(sockPath, uxmod))
 		}
 	} else {
 		log.Println("Listening at", s.Listen)

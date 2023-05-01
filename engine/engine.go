@@ -15,11 +15,13 @@ import (
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
+	"github.com/boypt/simple-torrent/common"
 	"github.com/fsnotify/fsnotify"
 )
 
 type Server interface {
 	GetStrAttribute(name string) string
+	GetBoolAttribute(name string) bool
 }
 
 const (
@@ -85,11 +87,16 @@ func (e *Engine) Configure(c *Config) error {
 	tc.ListenPort = c.IncomingPort
 	tc.DataDir = c.DownloadDirectory
 
-	// enable MMap on 64bit machines
-	if strconv.IntSize == 64 {
-		log.Println("[Configure] 64bit arch detected, using MMap for storage")
-		tc.DefaultStorage = storage.NewMMap(tc.DataDir)
+	if !(e.cld.GetBoolAttribute("DisableMmap")) {
+		// enable MMap on 64bit machines
+		if strconv.IntSize == 64 {
+			log.Println("[Configure] 64bit arch detected, using MMap for storage")
+			tc.DefaultStorage = storage.NewMMap(tc.DataDir)
+		}
+	} else {
+		log.Println("[Configure] mmap disabled")
 	}
+
 	if c.MuteEngineLog {
 		tc.Logger = eglog.Discard
 	}
@@ -189,7 +196,7 @@ func (e *Engine) NewTorrentByFilePath(path string) error {
 			return err
 		}
 		return nil
-	}()
+	}() // nolint: errcheck
 
 	info, err := metainfo.LoadFromFile(path)
 	if err != nil {
@@ -223,7 +230,8 @@ func (e *Engine) newTorrentBySpec(spec *torrent.TorrentSpec, taskT taskType) err
 		} else {
 			log.Printf("[newTorrentBySpec] reached max task %d, task already in queue: %s %v", e.config.MaxConcurrentTask, ih, taskT)
 		}
-		e.upsertTorrent(ih, spec.DisplayName, true) // show queueing task
+		_, err := e.upsertTorrent(ih, spec.DisplayName, true) // show queueing task
+		common.FancyHandleError(err)
 		return ErrMaxConnTasks
 	}
 
@@ -253,7 +261,7 @@ func (e *Engine) torrentEventProcessor(tt *torrent.Torrent, t *Torrent, ih strin
 	case <-t.dropWait:
 		tt.Drop()
 		log.Println("Task Dropped while waiting Info", ih)
-		go e.NextWaitTask()
+		go e.NextWaitTask() // nolint: errcheck
 		return
 	case <-tt.GotInfo():
 		// Already got full torrent info
@@ -266,7 +274,7 @@ func (e *Engine) torrentEventProcessor(tt *torrent.Torrent, t *Torrent, ih strin
 	}
 
 	if e.config.AutoStart {
-		go e.StartTorrent(ih)
+		go e.StartTorrent(ih) // nolint: errcheck
 	}
 
 	timeTk := time.NewTicker(3 * time.Second)
@@ -289,7 +297,7 @@ func (e *Engine) torrentEventProcessor(tt *torrent.Torrent, t *Torrent, ih strin
 		case <-t.dropWait:
 			tt.Drop()
 			log.Println("Task Droped, exit loop:", ih)
-			go e.NextWaitTask()
+			go e.NextWaitTask() // nolint: errcheck
 			return
 		case <-e.closeSync:
 			log.Println("Engine shutdown while downloading", ih)
@@ -325,9 +333,9 @@ func (e *Engine) taskRoutine(t *Torrent) {
 }
 
 func (e *Engine) stopRemoveTask(ih string) {
-	e.StopTorrent(ih)
+	common.FancyHandleError(e.StopTorrent(ih))
 	e.RemoveCache(ih)
-	e.DeleteTorrent(ih)
+	common.FancyHandleError(e.DeleteTorrent(ih))
 }
 
 func (e *Engine) ManualStartTorrent(infohash string) error {

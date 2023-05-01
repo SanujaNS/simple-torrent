@@ -8,7 +8,7 @@ import (
 
 func (s *Server) backgroundRoutines() {
 
-	go s.fetchSearchConfig(s.engineConfig.ScraperURL)
+	go s.fetchSearchConfig(s.engineConfig.ScraperURL) // nolint: errcheck
 
 	// initial state
 	s.state.Stats.System.loadStats()
@@ -21,7 +21,9 @@ func (s *Server) backgroundRoutines() {
 					go s.tickerRoutine()
 				}
 			case <-s.engine.TsChanged: // task added/deleted
+				s.engine.RLock()
 				s.state.Push()
+				s.engine.RUnlock()
 			}
 		}
 	}()
@@ -49,28 +51,30 @@ func (s *Server) backgroundRoutines() {
 
 // stateRoutines watches the tasks / sys states
 func (s *Server) tickerRoutine() {
-	tick := 2 * time.Second
+	defer atomic.StoreInt32(&(s.syncSemphor), 0)
+
+	tick := time.Duration(s.IntevalSec) * time.Second
+	log.Println("[tickerRoutine] sync connected, ticking for", tick)
 	tk := time.NewTicker(tick)
 	defer tk.Stop()
 
-	log.Println("[tickerRoutine] sync connected, ticking for", tick)
-	var iterCount, noConnCount uint
-	for range tk.C {
-		iterCount++
-		if s.state.NumConnections() == 0 {
-			noConnCount++
-		}
+	done := make(chan struct{})
+	go func() {
+		s.syncWg.Wait()
+		close(done)
+	}()
 
-		if noConnCount > 30 { // 1mins
-			atomic.StoreInt32(&(s.syncSemphor), 0)
-			log.Println("[tickerRoutine] sync exit for no web connections")
-			return
-		}
-
-		if iterCount%4 == 0 {
+	for {
+		select {
+		case <-tk.C:
 			s.state.Stats.System.loadStats()
 			s.state.Stats.ConnStat = s.engine.ConnStat()
+			s.engine.RLock()
+			s.state.Push()
+			s.engine.RUnlock()
+		case <-done:
+			log.Println("[tickerRoutine] sync exit")
+			return
 		}
-		s.state.Push()
 	}
 }
